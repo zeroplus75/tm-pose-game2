@@ -1,11 +1,9 @@
 /**
  * main.js
- * 포즈 인식과 게임 로직을 초기화하고 서로 연결하는 진입점
- *
- * PoseEngine, GameEngine, Stabilizer를 조합하여 애플리케이션을 구동
+ * Catch Zone Game Main Entry Point
  */
 
-// 전역 변수
+// Global Instances
 let poseEngine;
 let gameEngine;
 let stabilizer;
@@ -13,146 +11,157 @@ let ctx;
 let labelContainer;
 
 /**
- * 애플리케이션 초기화
+ * Initialize Application (Load Model & Camera)
  */
 async function init() {
   const startBtn = document.getElementById("startBtn");
-  const stopBtn = document.getElementById("stopBtn");
-
   startBtn.disabled = true;
+  startBtn.innerText = "Loading...";
 
   try {
-    // 1. PoseEngine 초기화
+    // 1. PoseEngine Init
     poseEngine = new PoseEngine("./my_model/");
     const { maxPredictions, webcam } = await poseEngine.init({
-      size: 200,
+      size: 400, // Larger size for better game visibility
       flip: true
     });
 
-    // 2. Stabilizer 초기화
+    // 2. Stabilizer Init
     stabilizer = new PredictionStabilizer({
-      threshold: 0.7,
-      smoothingFrames: 3
+      threshold: 0.8,
+      smoothingFrames: 4
     });
 
-    // 3. GameEngine 초기화 (선택적)
+    // 3. GameEngine Init
     gameEngine = new GameEngine();
+    setupGameCallbacks();
 
-    // 4. 캔버스 설정
+    // 4. Canvas Setup
     const canvas = document.getElementById("canvas");
-    canvas.width = 200;
-    canvas.height = 200;
+    canvas.width = 400;
+    canvas.height = 400;
     ctx = canvas.getContext("2d");
 
-    // 5. Label Container 설정
+    // 5. Label Container Setup
     labelContainer = document.getElementById("label-container");
-    labelContainer.innerHTML = ""; // 초기화
+    labelContainer.innerHTML = "";
     for (let i = 0; i < maxPredictions; i++) {
       labelContainer.appendChild(document.createElement("div"));
     }
 
-    // 6. PoseEngine 콜백 설정
+    // 6. Register Callbacks
     poseEngine.setPredictionCallback(handlePrediction);
-    poseEngine.setDrawCallback(drawPose);
+    poseEngine.setDrawCallback(drawLoop);
 
-    // 7. PoseEngine 시작
+    // 7. Start Camera Loop
     poseEngine.start();
 
-    stopBtn.disabled = false;
+    // UI Update
+    startBtn.innerText = "Camera Ready";
+    document.getElementById("gameStartBtn").disabled = false;
+
   } catch (error) {
-    console.error("초기화 중 오류 발생:", error);
-    alert("초기화에 실패했습니다. 콘솔을 확인하세요.");
+    console.error("Init Error:", error);
+    alert("Initialization failed. Check console.");
     startBtn.disabled = false;
+    startBtn.innerText = "Retry Init";
   }
 }
 
+function setupGameCallbacks() {
+  gameEngine.setScoreChangeCallback((score, level, missCount) => {
+    document.getElementById("score").innerText = score;
+    document.getElementById("level").innerText = level;
+    document.getElementById("miss").innerText = missCount;
+  });
+
+  gameEngine.setGameEndCallback((score, level, reason) => {
+    document.getElementById("final-score").innerText = score;
+    document.getElementById("game-over-reason").innerText = reason || "Game Over";
+    document.getElementById("game-over-overlay").classList.remove("hidden");
+  });
+}
+
 /**
- * 애플리케이션 중지
+ * Start the Game Logic
  */
-function stop() {
-  const startBtn = document.getElementById("startBtn");
-  const stopBtn = document.getElementById("stopBtn");
+function gameStart() {
+  if (!gameEngine) return;
 
-  if (poseEngine) {
-    poseEngine.stop();
-  }
+  // Hide Overlay
+  document.getElementById("game-over-overlay").classList.add("hidden");
 
-  if (gameEngine && gameEngine.isGameActive) {
-    gameEngine.stop();
-  }
-
-  if (stabilizer) {
-    stabilizer.reset();
-  }
-
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
+  // Start Engine
+  gameEngine.start();
+  console.log("Game Started!");
 }
 
 /**
- * 예측 결과 처리 콜백
- * @param {Array} predictions - TM 모델의 예측 결과
- * @param {Object} pose - PoseNet 포즈 데이터
+ * Prediction Callback
  */
 function handlePrediction(predictions, pose) {
-  // 1. Stabilizer로 예측 안정화
+  // Stabilize
   const stabilized = stabilizer.stabilize(predictions);
 
-  // 2. Label Container 업데이트
+  // Update Labels
   for (let i = 0; i < predictions.length; i++) {
     const classPrediction =
       predictions[i].className + ": " + predictions[i].probability.toFixed(2);
     labelContainer.childNodes[i].innerHTML = classPrediction;
+
+    // Highlight active
+    if (stabilized.className === predictions[i].className) {
+      labelContainer.childNodes[i].style.background = "#00adb5";
+      labelContainer.childNodes[i].style.color = "white";
+    } else {
+      labelContainer.childNodes[i].style.background = "rgba(255,255,255,0.1)";
+      labelContainer.childNodes[i].style.color = "inherit";
+    }
   }
 
-  // 3. 최고 확률 예측 표시
+  // Update Max Prediction UI
   const maxPredictionDiv = document.getElementById("max-prediction");
-  maxPredictionDiv.innerHTML = stabilized.className || "감지 중...";
+  maxPredictionDiv.innerHTML = stabilized.className || "Detecting...";
 
-  // 4. GameEngine에 포즈 전달 (게임 모드일 경우)
+  // Send to GameEngine
   if (gameEngine && gameEngine.isGameActive && stabilized.className) {
-    gameEngine.onPoseDetected(stabilized.className);
+    gameEngine.setBasketPose(stabilized.className);
   }
 }
 
 /**
- * 포즈 그리기 콜백
- * @param {Object} pose - PoseNet 포즈 데이터
+ * Main Drawing Loop (Called by PoseEngine)
  */
-function drawPose(pose) {
+function drawLoop(pose) {
   if (poseEngine.webcam && poseEngine.webcam.canvas) {
+    // 1. Draw Webcam Feed
     ctx.drawImage(poseEngine.webcam.canvas, 0, 0);
 
-    // 키포인트와 스켈레톤 그리기
+    // 2. Draw Skeleton (Optional, maybe semi-transparent)
     if (pose) {
       const minPartConfidence = 0.5;
+      // Semi-transparent
+      ctx.globalAlpha = 0.5;
       tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
       tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
+      ctx.globalAlpha = 1.0;
+    }
+
+    // 3. Update & Draw Game
+    if (gameEngine) {
+      gameEngine.update(performance.now());
+
+      // Update Time UI
+      if (gameEngine.isGameActive) {
+        const timeLeft = Math.max(0, gameEngine.levelDuration - gameEngine.currentLevelTime).toFixed(1);
+        document.getElementById("time").innerText = timeLeft;
+      }
+
+      gameEngine.draw(ctx, ctx.canvas.width, ctx.canvas.height);
     }
   }
 }
 
-// 게임 모드 시작 함수 (선택적 - 향후 확장용)
-function startGameMode(config) {
-  if (!gameEngine) {
-    console.warn("GameEngine이 초기화되지 않았습니다.");
-    return;
-  }
-
-  gameEngine.setCommandChangeCallback((command) => {
-    console.log("새로운 명령:", command);
-    // UI 업데이트 로직 추가 가능
-  });
-
-  gameEngine.setScoreChangeCallback((score, level) => {
-    console.log(`점수: ${score}, 레벨: ${level}`);
-    // UI 업데이트 로직 추가 가능
-  });
-
-  gameEngine.setGameEndCallback((finalScore, finalLevel) => {
-    console.log(`게임 종료! 최종 점수: ${finalScore}, 최종 레벨: ${finalLevel}`);
-    alert(`게임 종료!\n최종 점수: ${finalScore}\n최종 레벨: ${finalLevel}`);
-  });
-
-  gameEngine.start(config);
-}
+// Expose functions globally for HTML buttons
+window.init = init;
+window.gameStart = gameStart;
